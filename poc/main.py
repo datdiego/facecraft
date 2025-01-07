@@ -1,97 +1,76 @@
 import cv2
 import mediapipe as mp
 import numpy as np
-from scipy.spatial import ConvexHull
+import matplotlib.pyplot as plt
+from scipy.spatial import Delaunay
 import open3d as o3d
-import json
-from sklearn.decomposition import PCA
 
 # Initialize MediaPipe Face Mesh
 mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh(static_image_mode=False)
+face_mesh = mp_face_mesh.FaceMesh(static_image_mode=True)
 
-# Step 1: Extract Landmarks from Video
-def extract_landmarks_from_video(video_path):
-    cap = cv2.VideoCapture(video_path)
-    all_landmarks = []
+# Path to the input image
+image_path = "sample_image.png"  # Replace with your image file
 
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break  # End of video
+# Step 1: Extract Landmarks from Image
+def extract_landmarks_from_image(image_path):
+    # Load the image
+    image = cv2.imread(image_path)
+    rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        # Convert frame to RGB
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    # Process the image with MediaPipe
+    results = face_mesh.process(rgb_image)
+    if results.multi_face_landmarks:
+        # Extract landmarks from the first detected face
+        landmarks = [(lm.x, lm.y, lm.z) for lm in results.multi_face_landmarks[0].landmark]
+        return np.array(landmarks), image
+    else:
+        print("No landmarks detected.")
+        return None, image
 
-        # Process frame with MediaPipe
-        results = face_mesh.process(rgb_frame)
-        if results.multi_face_landmarks:
-            # Extract landmarks from the first detected face
-            landmarks = [(lm.x, lm.y, lm.z) for lm in results.multi_face_landmarks[0].landmark]
-            all_landmarks.append(landmarks)
-        else:
-            print("No landmarks detected for this frame.")
+# Step 2: Generate 2D Visualization of Landmarks
+def save_2d_landmarks_image(landmarks, image, output_file):
+    # Convert landmarks to pixel coordinates
+    h, w, _ = image.shape
+    pixel_landmarks = [(int(lm[0] * w), int(lm[1] * h)) for lm in landmarks]
 
-    cap.release()
-    print(f"Extracted landmarks from {len(all_landmarks)} frames.")
-    return np.array(all_landmarks)
+    # Plot the image with landmarks
+    plt.figure(figsize=(8, 8))
+    plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    for x, y in pixel_landmarks:
+        plt.scatter(x, y, c='red', s=10)
+    plt.title("2D Landmarks - Front Facing")
+    plt.axis("off")
+    plt.savefig(output_file)
+    plt.close()
+    print(f"2D landmarks image saved to {output_file}")
 
-# Step 2: Align and Combine Landmarks Across Frames
-def align_and_combine_landmarks(all_landmarks):
-    combined_points = []
-    reference_landmarks = all_landmarks[0]  # Use the first frame as reference
+# Step 3: Generate 3D Mesh
+def generate_3d_mesh(landmarks, output_file):
+    # Flip y-axis and normalize landmarks
+    landmarks[:, 1] = 1 - landmarks[:, 1]  # Flip y-axis
+    center = np.mean(landmarks, axis=0)  # Center points
+    landmarks -= center
 
-    # Align each frame's landmarks to the reference
-    for landmarks in all_landmarks:
-        landmarks = np.array(landmarks)
-
-        # Center landmarks using the nose (index 1)
-        center = landmarks[1]
-        aligned_landmarks = landmarks - center
-
-        # Align using PCA (optional)
-        pca = PCA(n_components=3)
-        aligned_landmarks = pca.fit_transform(aligned_landmarks)
-
-        combined_points.extend(aligned_landmarks)
-
-    # Convert to NumPy array
-    combined_points = np.array(combined_points)
-    print(f"Combined {len(combined_points)} points from all frames.")
-    return combined_points
-
-# Step 3: Add Synthetic Points to Complete the Head
-def add_synthetic_points(points):
-    # Add synthetic points for the back of the head
-    synthetic_points = np.random.uniform(-0.5, 0.5, (100, 3))
-    synthetic_points[:, 2] -= 1.0  # Push points backward
-
-    # Combine with the original points
-    complete_points = np.vstack((points, synthetic_points))
-    print(f"Added synthetic points. Total points: {len(complete_points)}.")
-    return complete_points
-
-# Step 4: Generate and Save 3D Mesh
-def generate_3d_mesh(points, output_file):
-    # Create a convex hull to form the mesh
-    hull = ConvexHull(points)
+    # Perform Delaunay triangulation
+    tri = Delaunay(landmarks[:, :2])  # Use x, y for triangulation
 
     # Create Open3D mesh
     mesh = o3d.geometry.TriangleMesh()
-    mesh.vertices = o3d.utility.Vector3dVector(points)
-    mesh.triangles = o3d.utility.Vector3iVector(hull.simplices)
+    mesh.vertices = o3d.utility.Vector3dVector(landmarks)
+    mesh.triangles = o3d.utility.Vector3iVector(tri.simplices)
     mesh.compute_vertex_normals()
 
     # Save the mesh
     o3d.io.write_triangle_mesh(output_file, mesh)
-    print(f"3D head mesh saved to {output_file}")
+    print(f"3D mesh saved to {output_file}")
 
-# Full Pipeline Execution
-video_path = "sample_video.mp4"  # Path to your video
-output_mesh = "reconstructed_head.obj"  # Output file for the 3D head model
-
-# Execute the steps
-all_landmarks = extract_landmarks_from_video(video_path)
-combined_points = align_and_combine_landmarks(all_landmarks)
-complete_points = add_synthetic_points(combined_points)
-generate_3d_mesh(complete_points, output_mesh)
+# Run the pipeline
+landmarks, original_image = extract_landmarks_from_image(image_path)
+if landmarks is not None:
+    # Save 2D landmarks image
+    save_2d_landmarks_image(landmarks, original_image, "landmarks_image.jpg")
+    # Generate 3D mesh
+    generate_3d_mesh(landmarks, "face_mesh.obj")
+else:
+    print("Failed to generate landmarks.")
